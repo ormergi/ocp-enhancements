@@ -385,7 +385,7 @@ any user-defined primary network.
 The main API extension here will be a namespace scoped network CRD as well a cluster scoped network CRD. 
 These CRDs will be registered by Cluster Network Operator (CNO) and managed by OVN-Kubernetes controller.
 
-#### CRDs
+#### Overview
 
 Following the [CRDs for Managing Networks](#crds-for-managing-networks), two CRDs shall be introduced: 
 - Namespace scoped CRD - represent user request for creating namespace scoped OVN network.
@@ -402,7 +402,7 @@ without the risk of destabilizing the cluster nodes or break the cluster network
 There should be a finalizer on the CRDs, so that upon deletion OVN-Kubernetes can validate that there are no pods still using this network.
 If there are pods still attached to this network, the network will not be removed.
 
-##### spec
+##### Spec
 
 The CRDs spec defines as follows:
 
@@ -437,6 +437,122 @@ The cluster scoped CRD status should reflect on which namespaces the network is 
 
 The CRD status should reflect the user-defined-network state through conditions, 
 reflecting the NAD state and underlying OVN network state.
+
+##### CRD Definitions
+
+The following CRDs should be installed by [CNO](https://github.com/openshift/cluster-network-operator) and managed by OVN-Kubernetes.
+
+##### Namespace scoped CRD
+```go
+// UserDefinedNetwork describes OVN network request for a Namespace.
+type UserDefinedNetwork struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="Spec is immutable"
+	// +kubebuilder:validation:XValidation:rule="(self.topology == 'Layer3' && size(self.subnets) > 0) || self.topology != 'Layer3'", message="Subnets is required for Layer3 topology"
+	// +required
+	Spec UserDefinedNetworkSpec `json:"spec"`
+	// +optional
+	Status UserDefinedNetworkStatus `json:"status,omitempty"`
+}
+```
+Suggested API validation rules:
+- Spec defined as mutable to avoid incomplete state in a scenario where a NAD is created from UDN spec and pods connected to the network. 
+UDN spec is changes, but pods connected to a network create from previous revision spec.
+- In case topology layer3 is selected, subnets must be provided.
+
+```go
+// UserDefinedNetworkSpec defines the desired state of UserDefinedNetwork.
+type UserDefinedNetworkSpec struct {
+	// The topological configuration for the network.
+	// +kubebuilder:validation:Enum=Layer2,Layer3
+	Topology NetworkTopology `json:"topology"`
+
+	// The network role in the pod (e.g.: Primary, Secondary).
+	// +kubebuilder:validation:Enum=Primary,Secondary
+	Role NetworkRole `json:"role"`
+
+	// The maximum transmission unit (MTU).
+	// The default value is 1400.
+	// +optional
+	Mtu uint `json:"mtu,omitempty"`
+
+	// The subnet to use for the network across the cluster.
+	// Only include the CIDR for the node. E.g. 10.100.200.0/24.
+	//
+	// IPv6 (2001:DBB::/64) and dual-stack (192.168.100.0/24,2001:DBB::/64) subnets are supported.
+	//
+	// When omitted, the logical switch implementing the network only provides layer 2 communication,
+	// and users must configure IP addresses for the pods.
+	// Port security only prevents MAC spoofing.
+	// +optional
+	Subnets []string `json:"subnets,omitempty"`
+
+	// A list of CIDRs.
+	// IP addresses are removed from the assignable IP address pool and are never passed to the pods.
+	// +optional
+	ExcludeSubnets []string `json:"excludeSubnets,omitempty"`
+
+	// Subnet used inside the OVN network topology.
+	// E.g. 100.65.0.0/24. IPv6 (fd99::/64) and dual-stack (100.65.0.0/24,fd99::/64).
+	// When omitted and network `role` is `primary` the following default CIDR is used `100.65.0.0/24`, IPv6 `fd99::/64`.
+	// +optional
+	JoinSubnets []string `json:"joinSubnets,omitempty"`
+
+	// Enable workloads have persistent IP addresses.
+	// For example: Virtual Machines will have the same IP addresses along their lifecycle (stop, start migration, reboots).
+	// Supported by Topology Layer2 only.
+	// +kubebuilder:validation:Enum=Enable,Disable
+	// +optional
+	VirtualizationIPAM string `json:"virtualizationIPAM,omitempty"`
+}
+```
+- `topology` and `role` fields are mandatory.
+
+Suggested API validation rules:
+- `topology` can be one of `Layer2`, `Layer3`.
+- `role` can be one of `Primary`, `Secondary`.
+- `virtualizationIPAM` can be one of `Enabled`, `Disabled`.
+
+##### Cluster scoped CRD
+```go
+// ClusterUserDefinedNetwork describes shared OVN network across namespaces request.
+type ClusterUserDefinedNetwork struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +kubebuilder:validation:Required
+	// +required
+	Spec ClusterUserDefinedNetworkSpec `json:"spec"`
+	// +optional
+	Status ClusterUserDefinedNetworkStatus `json:"status,omitempty"`
+}
+
+// ClusterUserDefinedNetwork defines the desired state of ClusterUserDefinedNetwork.
+type ClusterUserDefinedNetwork struct {
+	// NamespaceSelector Label selector for which namespace network should be available for.
+    // +kubebuilder:validation:Required
+    // +required
+	NamespaceSelector []metav1.LabelSelector `json:"namespaceSelector"`
+
+	// Template is direct specification of UserDefinedNetwork.
+	// +kubebuilder:validation:Required
+	// +required
+	Template *UserDefinedNetworkTemplateSpec `json:"template"`
+}
+
+// UserDefinedNetworkTemplateSpec UserDefinedNetwork spec template.
+type UserDefinedNetworkTemplateSpec struct {
+    // UserDefinedNetworkSpec contains the UserDefinedNetwork specification.
+	Spec UserDefinedNetworkSpec `json:"spec,omitempty"`
+}
+
+```
+- `topology` and `role` fields are mandatory.
+
+Suggested API validation rules:
+- `topology` can be one of `Layer2` or `Layer3`.
+- `role` can be one of `Primary` or `Secondary`.
 
 ###### Example
 Condition reflecting the network readiness:
